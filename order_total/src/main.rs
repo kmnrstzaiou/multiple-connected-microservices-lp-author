@@ -1,11 +1,12 @@
 #[macro_use]
 extern crate lazy_static;
 
-use std::net::SocketAddr;
-use std::convert::Infallible;
-use std::str;
-use hyper::service::{make_service_fn, service_fn};
-use hyper::{Body, Method, Request, Response, StatusCode, Server};
+use std::{convert::Infallible, net::SocketAddr, str};
+
+use hyper::{
+    service::{make_service_fn, service_fn},
+    Body, Method, Request, Response, Server, StatusCode,
+};
 use serde::{Deserialize, Serialize};
 
 lazy_static! {
@@ -70,16 +71,30 @@ async fn handle_request(req: Request<Body>) -> Result<Response<Body>, anyhow::Er
             let mut order: Order = serde_json::from_slice(&byte_stream).unwrap();
 
             let client = reqwest::Client::new();
-            let rate = client.post(&*SALES_TAX_RATE_SERVICE)
+            let response = client
+                .post(&*SALES_TAX_RATE_SERVICE)
                 .body(order.shipping_zip.clone())
                 .send()
-                .await?
-                .text()
-                .await?
-                .parse::<f32>()?;
-
-            order.total = order.subtotal * (1.0 + rate);
-            Ok(response_build(&serde_json::to_string_pretty(&order)?))
+                .await?;
+            match response.status() {
+                StatusCode::OK => {
+                    let rate = response.text().await?.parse::<f32>()?;
+                    order.total = order.subtotal * (1.0 + rate);
+                    Ok(response_build(&serde_json::to_string_pretty(&order)?))
+                }
+                StatusCode::NOT_FOUND => {
+                    let mut error = response_build(
+                        r#"{"status":"error", "message":"The zip code in the order does not have a corresponding sales tax rate."}"#,
+                    );
+                    *error.status_mut() = StatusCode::BAD_REQUEST;
+                    Ok(error)
+                }
+                _ => {
+                    let mut error = Response::default();
+                    *error.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+                    Ok(error)
+                }
+            }
         }
 
         // Return the 404 Not Found for other routes.
@@ -96,7 +111,10 @@ fn response_build(body: &str) -> Response<Body> {
     Response::builder()
         .header("Access-Control-Allow-Origin", "*")
         .header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        .header("Access-Control-Allow-Headers", "api,Keep-Alive,User-Agent,Content-Type")
+        .header(
+            "Access-Control-Allow-Headers",
+            "api,Keep-Alive,User-Agent,Content-Type",
+        )
         .body(Body::from(body.to_owned()))
         .unwrap()
 }
@@ -104,12 +122,8 @@ fn response_build(body: &str) -> Response<Body> {
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let addr = SocketAddr::from(([0, 0, 0, 0], 8002));
-    let make_svc = make_service_fn(|_| {
-        async move {
-            Ok::<_, Infallible>(service_fn(move |req| {
-                handle_request(req)
-            }))
-        }
+    let make_svc = make_service_fn(|_| async move {
+        Ok::<_, Infallible>(service_fn(move |req| handle_request(req)))
     });
     let server = Server::bind(&addr).serve(make_svc);
     dbg!("Server started on port 8002");

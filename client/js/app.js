@@ -8,7 +8,7 @@
   const totalField = document.getElementById("total");
 
   function displayError(err) {
-    alert("Error:" + err);
+    alert("Error: " + err);
   }
 
   function onComputeButton() {
@@ -28,7 +28,13 @@
       headers: { "Content-type": "application/json" },
     })
     .then(response => response.json())
-    .then(json => updateOrderForm(json));
+    .then(json => {
+      if (json.status === "error") {
+        displayError(json.message)
+      } else {
+        updateOrderForm(json)
+      }
+    });
   }
 
   function updateOrderForm(json) {
